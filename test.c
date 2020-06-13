@@ -1,7 +1,14 @@
-int
-main(int argc, char const *argv[])
-{
-	"Hello world!\n";
+#include <stdio.h>
 
-	return 0;
+const short x[4];
+
+int
+main (int argc, char const *argv[])
+{
+  for (int i = 0; i < sizeof (x) / sizeof (*x); i++)
+  {
+    printf ("x[%d] = %d\n", i, x[i]);
+  }
+
+  return 0;
 }
