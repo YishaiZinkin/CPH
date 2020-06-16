@@ -32,39 +32,30 @@ is_char (const_tree type)
 }
 
 static void
-handle_array (tree var)
+handle_constructor (tree ctor)
 {
-  tree type = TREE_TYPE (var);
-  unsigned arr_nelem = int_cst_value (TYPE_MAX_VALUE (TYPE_DOMAIN (type))) + 1;
+  gcc_assert (TREE_CODE (ctor) == CONSTRUCTOR);
 
-  gcc_assert (TREE_CODE (type) == ARRAY_TYPE);
-  gcc_assert (TREE_CODE (TREE_TYPE (type)) == INTEGER_TYPE);
+  unsigned i;
+  constructor_elt *init_val;
 
-  tree constructor = DECL_INITIAL (var);
-  if (constructor)
+  // Is the constructor empty?
+  if (CONSTRUCTOR_ELTS (ctor) == NULL)
   {
-    unsigned i;
-    constructor_elt *init_val;
-    FOR_EACH_VEC_ELT (*CONSTRUCTOR_ELTS (constructor), i, init_val)
+    return;
+  }
+
+  FOR_EACH_VEC_ELT (*CONSTRUCTOR_ELTS (ctor), i, init_val)
+  {
+    if (TREE_CODE (init_val->value) == CONSTRUCTOR)
     {
-      init_val->value = build_int_cst (TREE_TYPE (type), 6);
+      handle_constructor (init_val->value);
     }
-  }
-  else
-  {
-    // Build an empty initialization list
-    vec<constructor_elt, va_gc> *v;
-    vec_alloc (v, arr_nelem);
-    constructor = build_constructor (type, v);
-    DECL_INITIAL (var) = constructor;
-  }
-
-  // Append values to fill the rest of the intialization list
-  unsigned i = CONSTRUCTOR_ELTS (constructor)->length ();
-  for (; i < arr_nelem; i++)
-  {
-    CONSTRUCTOR_APPEND_ELT (CONSTRUCTOR_ELTS (constructor), NULL_TREE,
-                            build_int_cst (TREE_TYPE (type), 6));
+    else if (TREE_CODE (init_val->value) == INTEGER_CST &&
+             !is_char (TREE_TYPE (init_val->value)))
+    {
+      init_val->value = build_int_cst (TREE_TYPE (init_val->value), 6);
+    }
   }
 }
 
@@ -81,21 +72,24 @@ callback (void *gcc_data, void *user_data)
     if (TREE_CODE (type) == INTEGER_TYPE &&
         !is_char (type))
     {
-      /* Just override the current initial value, whether it exists or not.
-         If it does exist it might be shared, so we can't free it. It also
-         worth mentioning that if the variable is constant, references in the
-         current translation unit won't be effected because they are replaced
-         with the variable's value it an earlier stage of the compilation  */
-      DECL_INITIAL (var) = build_int_cst (type, 6);
+      if (DECL_INITIAL (var))
+      {
+        /* The initial value might be shared, so we can't free it. It also
+           worth mentioning that if the variable is constant, references in the
+           current translation unit won't be affected because they are replaced
+           with the variable's value in an earlier stage of the compilation  */
+        DECL_INITIAL (var) = build_int_cst (type, 6);
+      }
     }
-    /* Handle the case of array of integers.
-       Currently the case of arrays of more than one dimension isn't
-       supported  */
-    else if (TREE_CODE (type) == ARRAY_TYPE &&
-             TREE_CODE (TREE_TYPE (type)) == INTEGER_TYPE &&
-             !is_char (TREE_TYPE (type)))
+    else if (TREE_CODE (type) == ARRAY_TYPE ||
+             TREE_CODE (type) == RECORD_TYPE ||
+             TREE_CODE (type) == UNION_TYPE)
     {
-      handle_array (var);
+      tree ctor = DECL_INITIAL (var);
+      if (ctor && TREE_CODE (ctor) != STRING_CST)
+      {
+        handle_constructor (ctor);
+      }
     }
   }
 }
