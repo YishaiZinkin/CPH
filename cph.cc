@@ -216,6 +216,7 @@ struct cph_pass : gimple_opt_pass
       gimplify_function_tree (fndecl);
       build_cfg (fndecl);
       convert_to_ssa (fndecl);
+      DECL_STRUCT_FUNCTION (fndecl)->curr_properties = cfun->curr_properties;
 
       // Insert a call to this function at the beginning of the first BB of main
       gcall * fncall = gimple_build_call (fndecl, 0);
