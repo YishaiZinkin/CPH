@@ -99,7 +99,7 @@ callback (void *gcc_data, void *user_data)
 namespace {
 
 static tree
-build_trivial_generic_function (const char * name)
+build_generic_trampoline_function (const char * name, tree call_fn_decl)
 {
   tree fndecl = build_fn_decl (name, build_function_type_list (void_type_node,
                                                                 NULL_TREE));
@@ -112,7 +112,7 @@ build_trivial_generic_function (const char * name)
   DECL_NO_INSTRUMENT_FUNCTION_ENTRY_EXIT (fndecl) = 1;
   DECL_UNINLINABLE (fndecl) = 1;
 
-  // Create a return value
+  /* Create a return value  */
   tree retval = build_decl (UNKNOWN_LOCATION, RESULT_DECL,
           NULL_TREE, void_type_node);
   DECL_ARTIFICIAL (retval) = 1;
@@ -120,12 +120,9 @@ build_trivial_generic_function (const char * name)
   DECL_RESULT (fndecl) = retval;
   DECL_CONTEXT (retval) = fndecl;
 
-  // Populate the function
+  /* Populate the function  */
 
-  const char greeting[] = "Hello world!";
-  tree call_stmt = build_call_expr (builtin_decl_implicit (BUILT_IN_PUTS), 1,
-                                    build_string_literal (sizeof (greeting),
-                                                          greeting));
+  tree call_stmt = build_call_expr (call_fn_decl, 0);
 
   tree stmt_list = NULL_TREE;
   append_to_statement_list (call_stmt, &stmt_list);
@@ -140,11 +137,6 @@ build_trivial_generic_function (const char * name)
   TREE_USED (block) = 1;
 
   DECL_SAVED_TREE (fndecl) = bind_expr;
-
-  // Inform the callgraph about the new function
-  push_struct_function (fndecl);
-  cgraph_node::add_new_function (fndecl, true);
-  pop_cfun ();
 
   return fndecl;
 }
@@ -187,6 +179,23 @@ convert_to_ssa (tree fndecl)
   delete build_ssa_pass;
 }
 
+static tree
+build_trampoline_function (const char * name, tree call_fn_decl)
+{
+  tree fndecl = build_generic_trampoline_function (name, call_fn_decl);
+
+  /* Inform the callgraph about the new function  */
+  push_struct_function (fndecl);
+  cgraph_node::add_new_function (fndecl, true);
+  pop_cfun ();
+
+  gimplify_function_tree (fndecl);
+  build_cfg (fndecl);
+  convert_to_ssa (fndecl);
+
+  return fndecl;
+}
+
 
 const pass_data cph_pass_data =
 {
@@ -210,20 +219,27 @@ struct cph_pass : gimple_opt_pass
 
   virtual unsigned int execute(function * func) override
   {
-    if (strcmp (function_name (func), "main") == 0)
+    if (strcmp (function_name (func), "foo") == 0)
     {
-      tree fndecl = build_trivial_generic_function ("test_fn");
-      gimplify_function_tree (fndecl);
-      build_cfg (fndecl);
-      convert_to_ssa (fndecl);
+      /* Replace the address of the call at the beginning of foo() with the
+         address of test_fn, but don't modify the arguments or the return
+         type  */
+
+      gimple_stmt_iterator gsi =
+            gsi_start_bb (ENTRY_BLOCK_PTR_FOR_FN (func)->next_bb);
+      gimple * stmt = gsi_stmt (gsi);
+
+      /* Make sure the statment we're dealing with is actually a call  */
+      gcc_assert (gimple_code (stmt) == GIMPLE_CALL);
+
+      /* gimple_call_fn() returns ADDR_EXPR, so we need TREE_OPERAND to get
+         the FUNCTION_DECL  */
+      tree called_fn_decl = TREE_OPERAND (gimple_call_fn (stmt), 0);
+
+      tree fndecl = build_trampoline_function ("test_fn", called_fn_decl);
       DECL_STRUCT_FUNCTION (fndecl)->curr_properties = cfun->curr_properties;
 
-      // Insert a call to this function at the beginning of the first BB of main
-      gcall * fncall = gimple_build_call (fndecl, 0);
-      gimple_stmt_iterator gsi = gsi_start_bb (ENTRY_BLOCK_PTR_FOR_FN (func)->next_bb);
-
-      gsi_insert_before (&gsi, fncall, GSI_NEW_STMT);
-      update_stmt (fncall);
+      gimple_call_set_fndecl (stmt, fndecl);
     }
 
     return 0;

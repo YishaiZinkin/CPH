@@ -1,6 +1,12 @@
 #include <stdio.h>
 #include <assert.h>
 
+void
+foo ()
+{
+  printf("%s? %d!\n", "Why", 42);
+}
+
 struct A
 {
   int x;
@@ -57,6 +63,8 @@ long q[] = { 1 };
 int
 main (int argc, char const *argv[])
 {
+  foo ();
+
   assert (a.x == 6);
   assert (a.b == 6);
   assert (a.z == 6);
