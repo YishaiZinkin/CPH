@@ -60,10 +60,20 @@ int x[4][2] = { { 1, 2 }, { }, { 3 } };
 const short y[] = { 1, 3, 3 };
 long q[] = { 1 };
 
+struct D
+{
+  int (*baz)(const char *, ...);
+};
+
+void (*bar)() = foo;
+
+struct D p = { printf };
+
 int
 main (int argc, char const *argv[])
 {
-  foo ();
+  bar ();
+  p.baz ("COOL!\n");
 
   assert (a.x == 6);
   assert (a.b == 6);
