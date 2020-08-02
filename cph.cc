@@ -37,16 +37,28 @@ struct tramp_to_fndecl
   tree fndecl;
 };
 
-/* Holds all the trampoline functions generated.  */
+/* Holds all the trampoline functions generated for functions that are private
+   to this translation unit.  */
 
-std::vector<tramp_to_fndecl> tramp_fns;
+std::vector<tramp_to_fndecl> priv_tramp_fns;
 
 
 static bool
 is_fn_ptr (const_tree type)
 {
+  gcc_assert (type != NULL_TREE);
+
   return TREE_CODE (type) == POINTER_TYPE &&
          TREE_CODE (TREE_TYPE (type)) == FUNCTION_TYPE;
+}
+
+
+static bool
+is_fn_addr (const_tree t)
+{
+  return t != NULL_TREE &&
+         TREE_CODE (t) == ADDR_EXPR &&
+         is_fn_ptr (TREE_TYPE (t));
 }
 
 
@@ -72,21 +84,26 @@ build_trampoline_decl (tree call_fndecl)
     gcc_unreachable ();
   }
 
-  return
-    build_decl (input_location, FUNCTION_DECL, get_identifier (tramp_name),
-                  build_function_type_list (void_type_node, NULL_TREE));
+  tree fndecl =
+         build_fn_decl (tramp_name,
+                        build_function_type_list (void_type_node, NULL_TREE));
+
+  free (tramp_name);
+  return fndecl;
 }
 
 
-/* Build a trampoline function that calls CALL_FNDECL in generic form.  */
+/* Build in generic form a trampoline function that calls CALL_FNDECL.  */
 
 static tree
-do_build_generic_tramp_fn (tree call_fndecl)
+do_build_generic_tramp_fn (tree call_fndecl, bool is_public)
 {
   tree fndecl = build_trampoline_decl (call_fndecl);
   gcc_assert (fndecl != NULL);
 
+  DECL_EXTERNAL (fndecl) = 0;
   TREE_STATIC (fndecl) = 1;
+  TREE_PUBLIC (fndecl) = is_public;
   TREE_USED (fndecl) = 1;
   DECL_ARTIFICIAL (fndecl) = 1;
   DECL_IGNORED_P (fndecl) = 1;
@@ -135,9 +152,9 @@ do_build_generic_tramp_fn (tree call_fndecl)
    callgraph.  */
 
 static tree
-build_generic_tramp_fn (tree call_fndecl)
+build_generic_tramp_fn (tree call_fndecl, bool is_public)
 {
-  tree fndecl = do_build_generic_tramp_fn (call_fndecl);
+  tree fndecl = do_build_generic_tramp_fn (call_fndecl, is_public);
 
   /* Inform the callgraph about the new function  */
   push_struct_function (fndecl);
@@ -191,9 +208,9 @@ convert_to_ssa (tree fndecl)
 /* Build a trampoline function that calls CALL_FNDECL in gimple-ssa form.  */
 
 static tree
-build_ssa_tramp_fn (tree call_fndecl)
+build_ssa_tramp_fn (tree call_fndecl, bool is_public)
 {
-  tree fndecl = do_build_generic_tramp_fn (call_fndecl);
+  tree fndecl = do_build_generic_tramp_fn (call_fndecl, is_public);
 
   /* Inform the callgraph about the new function  */
   push_struct_function (fndecl);
@@ -208,31 +225,43 @@ build_ssa_tramp_fn (tree call_fndecl)
 }
 
 
-/* Get a trampoline fndecl that calls FNDECL. If no matching trampoline
-   function already exists, create one.
+/* Get an ADDR_EXPR of a trampoline that calls FN_ADDR_EXPR. If no matching
+   trampoline function already exists, create one.
    If GENERIC is true, the function will be created in generic form. Else the
    function will be created in gimple-ssa form.  */
 
 static tree
-get_create_tramp_fn (tree fndecl, bool generic)
+get_create_tramp_fn_addr_expr (tree fn_addr_expr, bool generic)
 {
+  gcc_assert (TREE_CODE (fn_addr_expr) == ADDR_EXPR);
+
+  tree fndecl = TREE_OPERAND (fn_addr_expr, 0);
+
+  if (TREE_PUBLIC (fndecl))
+  {
+    /* For PUBLIC functions the trampoline functions are assumed to be already
+       defined  */
+    tree tramp_fndecl = build_trampoline_decl (fndecl);
+    return build_fold_addr_expr (tramp_fndecl);
+  }
+
   std::vector<tramp_to_fndecl>::iterator it;
-  for (it = tramp_fns.begin(); it != tramp_fns.end(); it++)
+  for (it = priv_tramp_fns.begin(); it != priv_tramp_fns.end(); it++)
   {
     if (it->fndecl == fndecl)
     {
-      return it->tramp_fndecl;
+      return build_fold_addr_expr (it->tramp_fndecl);
     }
   }
 
-  tree tramp_fndecl = generic ? build_generic_tramp_fn (fndecl)
-                              : build_ssa_tramp_fn (fndecl);
+  tree tramp_fndecl = generic ? build_generic_tramp_fn (fndecl, false)
+                              : build_ssa_tramp_fn (fndecl, false);
 
-  /* Add the new trampoline function to the tramp_fns vector  */
+  /* Add the new trampoline function to the priv_tramp_fns vector  */
   struct tramp_to_fndecl tramp_to_fndecl = { tramp_fndecl, fndecl };
-  tramp_fns.push_back (tramp_to_fndecl);
+  priv_tramp_fns.push_back (tramp_to_fndecl);
 
-  return tramp_fndecl;
+  return build_fold_addr_expr (tramp_fndecl);
 }
 
 
@@ -258,15 +287,10 @@ handle_constructor (tree ctor)
     {
       handle_constructor (init_val->value);
     }
-    else if (TREE_CODE (init_val->value) == ADDR_EXPR &&
-             is_fn_ptr (TREE_TYPE (init_val->value)))
+    else if (is_fn_addr (init_val->value))
     {
-      tree pointed_fndecl = TREE_OPERAND (init_val->value, 0);
-
-      tree tramp_fndecl = get_create_tramp_fn (pointed_fndecl, true);
-
       /* We don't free the current initial value because it might be shared  */
-      init_val->value = build_fold_addr_expr (tramp_fndecl);
+      init_val->value = get_create_tramp_fn_addr_expr (init_val->value, true);
     }
   }
 }
@@ -277,27 +301,37 @@ handle_constructor (tree ctor)
 static void
 ipa_callback (void *gcc_data, void *user_data)
 {
-  varpool_node *node;
-
-  FOR_EACH_VARIABLE (node)
+  /* First we create a trmapoline function for each function defined public in
+     this translation unit, for potential use in other translation units - when
+     building trampoline function declaration for an EXTERNAL function it's
+     defined EXTERNAL as well.  */
+  cgraph_node *cnode;
+  FOR_EACH_DEFINED_FUNCTION (cnode)
   {
-    tree var = node->decl;
+    tree fndecl = cnode->decl;
+    if (TREE_PUBLIC (fndecl))
+    {
+      build_generic_tramp_fn (fndecl, true);
+    }
+  }
+
+  varpool_node *vnode;
+  FOR_EACH_VARIABLE (vnode)
+  {
+    tree var = vnode->decl;
     tree type = TREE_TYPE (var);
 
     /* Is it an initialized function pointer?  */
+    /* FIXME: What about when initializing integer (for example) with a function pointer?  */
     if (is_fn_ptr (type) &&
         DECL_INITIAL (var))
     {
+      /* FIXME: Are you sure this assumption is right?  */
       gcc_assert (TREE_CODE (DECL_INITIAL (var)) == ADDR_EXPR);
 
-      /* DECL_INITIAL (var) is ADDR_EXPR, so we need TREE_OPERAND to get
-         the FUNCTION_DECL  */
-      tree pointed_fndecl = TREE_OPERAND (DECL_INITIAL (var), 0);
-
-      tree tramp_fndecl = get_create_tramp_fn (pointed_fndecl, true);
-
       /* We don't free the current DECL_INITIAL because it might be shared  */
-      DECL_INITIAL (var) = build_fold_addr_expr (tramp_fndecl);
+      DECL_INITIAL (var) =
+          get_create_tramp_fn_addr_expr (DECL_INITIAL (var), true);
     }
     else if (TREE_CODE (type) == ARRAY_TYPE ||
              TREE_CODE (type) == RECORD_TYPE ||
@@ -309,6 +343,76 @@ ipa_callback (void *gcc_data, void *user_data)
         handle_constructor (ctor);
       }
     }
+  }
+}
+
+
+static void
+handle_gimple_assign (gassign *gs)
+{
+  tree rhs1 = gimple_assign_rhs1 (gs);
+  if (is_fn_addr (rhs1))
+  {
+    gimple_assign_set_rhs1 (gs, get_create_tramp_fn_addr_expr (rhs1, false));
+  }
+
+  tree rhs2 = gimple_assign_rhs2 (gs);
+  if (is_fn_addr (rhs2))
+  {
+    gimple_assign_set_rhs2 (gs, get_create_tramp_fn_addr_expr (rhs2, false));
+  }
+
+  tree rhs3 = gimple_assign_rhs3 (gs);
+  if (is_fn_addr (rhs3))
+  {
+    gimple_assign_set_rhs3 (gs, get_create_tramp_fn_addr_expr (rhs3, false));
+  }
+}
+
+
+static void
+handle_gimple_call (gcall *gs)
+{
+  unsigned num_args = gimple_call_num_args (gs);
+  for (unsigned i = 0; i < num_args; i++)
+  {
+    tree arg = gimple_call_arg (gs, i);
+    if (is_fn_addr (arg))
+    {
+      gimple_call_set_arg (gs, i, get_create_tramp_fn_addr_expr (arg, false));
+    }
+  }
+}
+
+
+static void
+handle_gimple_cond (gcond *gs)
+{
+  tree lhs = gimple_cond_lhs (gs);
+  if (is_fn_addr (lhs))
+  {
+    gimple_cond_set_lhs (gs, get_create_tramp_fn_addr_expr (lhs, false));
+  }
+
+  tree rhs = gimple_cond_rhs (gs);
+  if (is_fn_addr (rhs))
+  {
+    gimple_cond_set_rhs (gs, get_create_tramp_fn_addr_expr (rhs, false));
+  }
+}
+
+
+static void
+handle_gimple_return (greturn *gs)
+{
+  tree retval = gimple_return_retval (gs);
+
+  /* Actually not sure that this case is even possible in ssa-form, but why
+     not to be on the safe side  */
+  if (is_fn_addr (retval))
+  {
+    gimple_return_set_retval (gs,
+                              get_create_tramp_fn_addr_expr (retval, false));
   }
 }
 
@@ -328,42 +432,56 @@ const pass_data cph_pass_data =
 
 struct cph_pass : gimple_opt_pass
 {
-  cph_pass(gcc::context * ctx) :
-    gimple_opt_pass(cph_pass_data, ctx)
+  cph_pass (gcc::context * ctx) :
+    gimple_opt_pass (cph_pass_data, ctx)
   {
   }
 
-  virtual unsigned int execute(function * func) override
+  virtual unsigned int
+  execute (function * func) override
   {
-    // if (strcmp (function_name (func), "foo") == 0)
-    // {
-    //   /* Replace the address of the call at the beginning of foo() with the
-    //      address of test_fn, but don't modify the arguments or the return
-    //      type  */
+    /* Notice that this part of the plugin is executed on trampoline functions
+       defined in the previous part, but there is nothing to handle in them and
+       the plugin won't touch them so we don't really care  */
 
-    //   gimple_stmt_iterator gsi =
-    //         gsi_start_bb (ENTRY_BLOCK_PTR_FOR_FN (func)->next_bb);
-    //   gimple * stmt = gsi_stmt (gsi);
+    basic_block bb;
+    FOR_EACH_BB_FN (bb, func)
+    {
+      gimple_stmt_iterator gsi;
+      for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi))
+      {
+        gimple *gs = gsi_stmt (gsi);
+        switch (gimple_code (gs))
+          {
+          case GIMPLE_ASSIGN:
+            handle_gimple_assign (GIMPLE_CHECK2<gassign *> (gs));
+            break;
 
-    //    Make sure the statment we're dealing with is actually a call  
-    //   gcc_assert (gimple_code (stmt) == GIMPLE_CALL);
+          case GIMPLE_CALL:
+            handle_gimple_call (GIMPLE_CHECK2<gcall *> (gs));
+            break;
 
-    //   /* gimple_call_fn() returns ADDR_EXPR, so we need TREE_OPERAND to get
-    //      the FUNCTION_DECL  */
-    //   tree called_fn_decl = TREE_OPERAND (gimple_call_fn (stmt), 0);
+          case GIMPLE_RETURN:
+            handle_gimple_return (GIMPLE_CHECK2<greturn *> (gs));
+            break;
 
-    //   tree fndecl = build_ssa_tramp_fn (called_fn_decl);
-    //   DECL_STRUCT_FUNCTION (fndecl)->curr_properties = cfun->curr_properties;
+          case GIMPLE_COND:
+            handle_gimple_cond (GIMPLE_CHECK2<gcond *> (gs));
+            break;
 
-    //   gimple_call_set_fndecl (stmt, fndecl);
-    // }
+          default:
+            break;
+          }
+      }
+    }
 
     return 0;
   }
 
-  virtual cph_pass *clone() override
+  virtual cph_pass *
+  clone() override
   {
-    // We do not clone ourselves
+    /* We do not clone ourselves  */
     return this;
   }
 };
@@ -374,16 +492,27 @@ int
 plugin_init (struct plugin_name_args *plugin_info,
                 struct plugin_gcc_version *version)
 {
+  /* The plugin consists of two passes:
+
+     The first pass runs after the IPA passes and
+     1. Generates trampoline functions for all the public functions defined in
+        this translation unit (trmapoline functions for private functions (i.e.
+        static) are generated as needed).
+     2. Handles initializations of global variables.
+
+     The second pass runs after the code is lowered to ssa-form and replaces
+     function address expressions in the code itself.  */
+
   register_callback(plugin_info->base_name, PLUGIN_INFO, NULL,
                     &my_gcc_plugin_info);
 
-  register_callback (plugin_info->base_name, PLUGIN_ALL_IPA_PASSES_START,
+  register_callback (plugin_info->base_name, PLUGIN_ALL_IPA_PASSES_END,
                      ipa_callback, NULL);
 
   struct register_pass_info pass_info;
 
   pass_info.pass = new cph_pass(g);
-  pass_info.reference_pass_name = "*all_optimizations";
+  pass_info.reference_pass_name = "ssa";
   pass_info.ref_pass_instance_number = 1;
   pass_info.pos_op = PASS_POS_INSERT_AFTER;
 

@@ -65,52 +65,21 @@ struct D
   int (*baz)(const char *, ...);
 };
 
-void (*bar)() = foo;
+void baz (void (*p)())
+{
+  void (*q)() = p;
 
-struct D p = { printf };
+  if (p == foo)
+    printf ("WOW\n");
+  else
+    printf("Cry\n");
+}
 
 int
 main (int argc, char const *argv[])
 {
-  bar ();
-  p.baz ("COOL!\n");
-
-  assert (a.x == 6);
-  assert (a.b == 6);
-  assert (a.z == 6);
-  assert (a.q == 6);
-
-  assert (u.a == 6);
-  assert (d.z == 6);
-
-  assert (b == 6);
-  assert (c == 6);
-  assert (w == 6);
-
-  for (int i = 0; i < sizeof (x) / sizeof (*x); i++)
-  {
-    for (int j = 0; j < sizeof (*x) / sizeof (**x); j++)
-    {
-      if (x[i][j])
-      {
-        assert (x[i][j] == 6);
-      }
-    }
-  }
-
-  for (int i = 0; i < sizeof (y) / sizeof (*y); i++)
-  {
-    if (y[i])
-      assert (y[i] == 6);
-  }
-
-  for (int i = 0; i < sizeof (q) / sizeof (*q); i++)
-  {
-    if (q[i])
-      assert (q[i] == 6);
-  }
-
-  printf("All Good :)\n");
+  void (*bar)(void (*)()) = baz;
+  bar (foo);
 
   return 0;
 }

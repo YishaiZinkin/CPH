@@ -5,14 +5,14 @@
 
 
 void
-print_tree_code (int tree_code)
+print_tree_code (tree t)
 {
 #define DEFTREECODE(SYM, STRING, TYPE, NARGS) \
   case SYM: \
     std::cout << STRING << " (" #SYM ")"; \
     break;
 
-  switch (tree_code)
+  switch (TREE_CODE (t))
     {
 #include "tree.def"
 
@@ -21,6 +21,25 @@ print_tree_code (int tree_code)
     }
 
 #undef DEFTREECODE
+}
+
+void
+print_gimple_code (const gimple *g)
+{
+#define DEFGSCODE(SYM, STRING, STRUCT)  \
+  case SYM: \
+    std::cout << STRING << " (" #SYM ")"; \
+    break;
+
+  switch (gimple_code (g))
+    {
+#include "gimple.def"
+
+      default:
+        std::cout << "UNKNOWN CODE";
+    }
+
+  #undef DEFGSCODE
 }
 
 void
@@ -33,7 +52,7 @@ print_c_tree_and_code (tree t)
   pp_needs_newline (&pp) = true;
   pp.buffer->stream = stdout;
   std::cout << std::endl;
-  print_tree_code (TREE_CODE (t));
+  print_tree_code (t);
   std::cout  << ":";
   pp.statement (t);
   pp_newline_and_flush (&pp);
